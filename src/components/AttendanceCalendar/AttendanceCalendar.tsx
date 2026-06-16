@@ -1,6 +1,6 @@
-import { useMemo } from 'react';
-import { ChevronLeft, ChevronRight, X } from 'lucide-react';
-import { Attendance, AttendanceStatus, ATTENDANCE_LABELS, ATTENDANCE_BG_COLORS, ATTENDANCE_LIGHT_BG, Worker } from '@/types';
+import { useMemo, useState } from 'react';
+import { ChevronLeft, ChevronRight, X, Check } from 'lucide-react';
+import { Attendance, AttendanceStatus, ATTENDANCE_LABELS, ATTENDANCE_BG_COLORS, ATTENDANCE_LIGHT_BG, ATTENDANCE_TEXT_COLORS, Worker } from '@/types';
 
 interface AttendanceCalendarProps {
   worker: Worker;
@@ -8,7 +8,10 @@ interface AttendanceCalendarProps {
   attendances: Attendance[];
   onClose: () => void;
   onChangeMonth: (ym: string) => void;
+  onEditDay: (workerId: string, date: string, status: AttendanceStatus) => void;
 }
+
+const STATUS_OPTIONS: AttendanceStatus[] = ['present', 'leave', 'absent'];
 
 export default function AttendanceCalendar({
   worker,
@@ -16,11 +19,13 @@ export default function AttendanceCalendar({
   attendances,
   onClose,
   onChangeMonth,
+  onEditDay,
 }: AttendanceCalendarProps) {
   const [year, month] = yearMonth.split('-').map(Number);
   const firstDay = new Date(year, month - 1, 1);
   const daysInMonth = new Date(year, month, 0).getDate();
   const startWeekday = firstDay.getDay();
+  const [editingDay, setEditingDay] = useState<number | null>(null);
 
   const attendanceMap = useMemo(() => {
     const map = new Map<number, AttendanceStatus>();
@@ -53,6 +58,12 @@ export default function AttendanceCalendar({
     onChangeMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
   };
 
+  const handleStatusChange = (day: number, status: AttendanceStatus) => {
+    const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    onEditDay(worker.id, dateStr, status);
+    setEditingDay(null);
+  };
+
   const cells: (number | null)[] = [];
   for (let i = 0; i < startWeekday; i++) cells.push(null);
   for (let d = 1; d <= daysInMonth; d++) cells.push(d);
@@ -71,7 +82,7 @@ export default function AttendanceCalendar({
             </div>
             <div>
               <h3 className="text-lg font-bold text-slate-800">{worker.name}</h3>
-              <p className="text-sm text-slate-500">月度考勤日历</p>
+              <p className="text-sm text-slate-500">月度考勤日历 · 点击日期可修改</p>
             </div>
           </div>
           <button
@@ -126,13 +137,48 @@ export default function AttendanceCalendar({
             {cells.map((day, idx) => {
               if (day === null) return <div key={idx} className="aspect-square" />;
               const status = attendanceMap.get(day);
+              const isEditing = editingDay === day;
+
+              if (isEditing) {
+                return (
+                  <div
+                    key={idx}
+                    className="aspect-square rounded-xl flex flex-col items-center justify-center bg-white border-2 border-indigo-400 shadow-lg z-10 relative"
+                  >
+                    <span className="text-xs font-bold text-slate-700 mb-1">{day}</span>
+                    <div className="flex flex-col gap-0.5 w-full px-1">
+                      {STATUS_OPTIONS.map((s) => (
+                        <button
+                          key={s}
+                          onClick={() => handleStatusChange(day, s)}
+                          className={`w-full text-[10px] py-0.5 px-1 rounded font-medium transition-colors ${
+                            status === s
+                              ? `${ATTENDANCE_BG_COLORS[s]} text-white`
+                              : `${ATTENDANCE_LIGHT_BG[s]} ${ATTENDANCE_TEXT_COLORS[s]} hover:opacity-80`
+                          }`}
+                        >
+                          {ATTENDANCE_LABELS[s]}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      onClick={() => setEditingDay(null)}
+                      className="mt-0.5 p-0.5 rounded hover:bg-slate-100"
+                    >
+                      <X className="w-3 h-3 text-slate-400" />
+                    </button>
+                  </div>
+                );
+              }
+
               return (
-                <div
+                <button
                   key={idx}
-                  className={`aspect-square rounded-xl flex flex-col items-center justify-center text-sm font-medium relative ${
+                  onClick={() => setEditingDay(day)}
+                  className={`aspect-square rounded-xl flex flex-col items-center justify-center text-sm font-medium relative cursor-pointer transition-all hover:scale-105 hover:shadow-md ${
                     status
                       ? `${ATTENDANCE_BG_COLORS[status]} text-white shadow-sm`
-                      : 'bg-slate-50 text-slate-400'
+                      : 'bg-slate-50 text-slate-400 border border-dashed border-slate-300'
                   }`}
                 >
                   <span>{day}</span>
@@ -141,7 +187,10 @@ export default function AttendanceCalendar({
                       {ATTENDANCE_LABELS[status]}
                     </span>
                   )}
-                </div>
+                  {!status && (
+                    <span className="text-[10px] mt-0.5 opacity-60">补记</span>
+                  )}
+                </button>
               );
             })}
           </div>
@@ -160,7 +209,7 @@ export default function AttendanceCalendar({
               旷工
             </div>
             <div className="flex items-center gap-1.5">
-              <span className="w-3 h-3 rounded bg-slate-100 border border-slate-200" />
+              <span className="w-3 h-3 rounded bg-slate-100 border border-dashed border-slate-300" />
               未记录
             </div>
           </div>

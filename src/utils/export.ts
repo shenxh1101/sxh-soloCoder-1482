@@ -1,4 +1,4 @@
-import { Worker, Attendance, Advance, SalaryDetail, TRADE_LABELS, ATTENDANCE_LABELS } from '@/types';
+import { Worker, Attendance, Advance, SalaryDetail, TRADE_LABELS, ATTENDANCE_LABELS, ProjectWork } from '@/types';
 import { getYearMonth } from './date';
 
 function toCSV(rows: (string | number)[][]): string {
@@ -117,4 +117,59 @@ export function exportAdvances(workers: Worker[], advances: Advance[], yearMonth
     });
   const suffix = yearMonth ?? '全部';
   downloadCSV(toCSV(rows), `工地_借支记录表_${suffix}.csv`);
+}
+
+export function exportProjectReconciliation(
+  works: ProjectWork[],
+  workers: Worker[],
+  projectName: string,
+  yearMonth: string
+) {
+  const workerMap = new Map(workers.map((w) => [w.id, w]));
+  const filtered = works.filter(
+    (w) => w.project === projectName && w.date.startsWith(yearMonth)
+  );
+
+  const rows: (string | number)[][] = [
+    ['项目名称', '楼号', '楼层', '日期', '工人姓名', '工种', '面积(㎡)', '单价(元/㎡)', '金额(元)', '工作内容'],
+  ];
+
+  let totalArea = 0;
+  let totalWage = 0;
+
+  filtered
+    .sort((a, b) => {
+      const bComp = (a.building || '').localeCompare(b.building || '');
+      if (bComp !== 0) return bComp;
+      const fComp = (a.floor || '').localeCompare(b.floor || '');
+      if (fComp !== 0) return fComp;
+      return a.date.localeCompare(b.date);
+    })
+    .forEach((w) => {
+      const worker = workerMap.get(w.workerId);
+      const unitPrice = worker?.unitPrice || 0;
+      const wage = w.area * unitPrice;
+      totalArea += w.area;
+      totalWage += wage;
+      rows.push([
+        w.project || projectName,
+        w.building || '-',
+        w.floor || '-',
+        w.date,
+        worker?.name ?? '未知',
+        worker ? TRADE_LABELS[worker.trade] : '',
+        w.area,
+        unitPrice,
+        wage,
+        w.remark ?? '',
+      ]);
+    });
+
+  rows.push([]);
+  rows.push(['合计', '', '', '', '', '', totalArea, '', totalWage, '']);
+
+  downloadCSV(
+    toCSV(rows),
+    `工地_包活对账单_${projectName}_${yearMonth}.csv`
+  );
 }

@@ -12,6 +12,8 @@ import {
   Building2,
   PenLine,
   Trash2,
+  BookOpen,
+  FileSpreadsheet,
 } from 'lucide-react';
 import { useStore } from '@/store/useStore';
 import Modal from '@/components/Modal/Modal';
@@ -22,13 +24,15 @@ import {
   PayrollSlip,
   PayrollStatus,
   PAYROLL_STATUS_LABELS,
+  PayrollFilterStatus,
+  PAYROLL_FILTER_LABELS,
   ProjectWork,
   Worker,
 } from '@/types';
 import { getCurrentYearMonth, todayStr } from '@/utils/date';
-import { exportSalary } from '@/utils/export';
+import { exportSalary, exportProjectReconciliation } from '@/utils/export';
 
-type TabKey = 'salary' | 'payroll';
+type TabKey = 'salary' | 'payroll' | 'ledger';
 
 interface WorkFormData {
   workerId: string;
@@ -37,6 +41,13 @@ interface WorkFormData {
   building: string;
   floor: string;
   area: number;
+  remark: string;
+}
+
+interface SignFormData {
+  signature: string;
+  signBy: string;
+  operator: string;
   remark: string;
 }
 
@@ -79,8 +90,10 @@ export default function Salary() {
     getProjectWorksByWorkerMonth,
     generatePayrollSlips,
     getPayrollSlipsByMonth,
-    updatePayrollStatus,
+    confirmPayrollSlip,
+    revertPayrollSlip,
     batchUpdatePayrollStatusByTrade,
+    getPaymentRecordsByMonth,
   } = useStore();
 
   const [activeTab, setActiveTab] = useState<TabKey>('salary');
@@ -88,6 +101,15 @@ export default function Salary() {
   const [detailModal, setDetailModal] = useState<SalaryDetail | null>(null);
   const [payrollDetail, setPayrollDetail] = useState<PayrollSlip | null>(null);
   const [workModalOpen, setWorkModalOpen] = useState(false);
+  const [signModalOpen, setSignModalOpen] = useState(false);
+  const [signForm, setSignForm] = useState<SignFormData>({
+    signature: '',
+    signBy: '',
+    operator: '',
+    remark: '',
+  });
+  const [ledgerFilter, setLedgerFilter] = useState<PayrollFilterStatus>('all');
+  const [ledgerTradeFilter, setLedgerTradeFilter] = useState<Trade | 'all'>('all');
   const [workForm, setWorkForm] = useState<WorkFormData>({
     workerId: '',
     date: todayStr(),
@@ -106,6 +128,11 @@ export default function Salary() {
   const payrollSlips = useMemo(
     () => getPayrollSlipsByMonth(yearMonth),
     [getPayrollSlipsByMonth, yearMonth]
+  );
+
+  const paymentRecords = useMemo(
+    () => getPaymentRecordsByMonth(yearMonth),
+    [getPaymentRecordsByMonth, yearMonth]
   );
 
   const totals = salaries.reduce(
@@ -142,6 +169,14 @@ export default function Salary() {
     [monthProjectWorks, workers]
   );
 
+  const projectNames = useMemo(() => {
+    const names = new Set<string>();
+    monthProjectWorks.forEach((pw) => {
+      if (pw.project) names.add(pw.project);
+    });
+    return Array.from(names);
+  }, [monthProjectWorks]);
+
   const detailWorker = useMemo(() => {
     if (!detailModal) return null;
     return workers.find((w) => w.id === detailModal.workerId);
@@ -172,6 +207,61 @@ export default function Salary() {
     [workers]
   );
 
+  const filteredLedgerRecords = useMemo(() => {
+    let records = paymentRecords;
+
+    if (ledgerTradeFilter !== 'all') {
+      const tradeWorkerIds = new Set(
+        workers.filter((w) => w.trade === ledgerTradeFilter).map((w) => w.id)
+      );
+      records = records.filter((r) => tradeWorkerIds.has(r.workerId));
+    }
+
+    if (ledgerFilter === 'paid') {
+      records = records;
+    } else if (ledgerFilter === 'unpaid') {
+      const paidWorkerIds = new Set(records.map((r) => r.workerId));
+      const unpaidSlips = payrollSlips.filter(
+        (p) => p.status === 'unpaid' && !paidWorkerIds.has(p.workerId)
+      );
+      return [
+        ...records,
+        ...unpaidSlips.map((s) => ({
+          id: `unpaid-${s.id}`,
+          yearMonth: s.yearMonth,
+          workerId: s.workerId,
+          slipId: s.id,
+          paidDate: '',
+          amount: 0,
+          operator: '',
+          signature: '',
+          signBy: '',
+          remark: '',
+          createdAt: '',
+          _isUnpaid: true,
+          _netSalary: s.netSalary,
+        } as any)),
+      ];
+    } else if (ledgerFilter === 'partial') {
+      const tradeSlips = ledgerTradeFilter !== 'all'
+        ? payrollSlips.filter((p) => {
+            const tradeWorkerIds = new Set(
+              workers.filter((w) => w.trade === ledgerTradeFilter).map((w) => w.id)
+            );
+            return tradeWorkerIds.has(p.workerId);
+          })
+        : payrollSlips;
+      const paidCount = tradeSlips.filter((p) => p.status === 'paid').length;
+      const totalCount = tradeSlips.length;
+      if (paidCount > 0 && paidCount < totalCount) {
+        return records;
+      }
+      return [];
+    }
+
+    return records;
+  }, [paymentRecords, ledgerFilter, ledgerTradeFilter, workers, payrollSlips]);
+
   function handleWorkSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!workForm.workerId || workForm.area <= 0) return;
@@ -195,6 +285,61 @@ export default function Salary() {
       remark: '',
     });
   }
+
+  function openSignModal(slip: PayrollSlip) {
+    const w = workerMap.get(slip.workerId);
+    setSignForm({
+      signature: w?.name || '',
+      signBy: '',
+      operator: '',
+      remark: '',
+    });
+    setPayrollDetail(slip);
+    setSignModalOpen(true);
+  }
+
+  function handleConfirmPay() {
+    if (!payrollDetail) return;
+    if (!signForm.operator.trim()) return;
+    confirmPayrollSlip(payrollDetail.id, {
+      signature: signForm.signature,
+      signBy: signForm.signBy,
+      operator: signForm.operator,
+      remark: signForm.remark,
+    });
+    setSignModalOpen(false);
+    setPayrollDetail({
+      ...payrollDetail,
+      status: 'paid',
+      paidDate: todayStr(),
+      signature: signForm.signature,
+      signBy: signForm.signBy,
+      operator: signForm.operator,
+    });
+  }
+
+  function handleRevertPay() {
+    if (!payrollDetail) return;
+    revertPayrollSlip(payrollDetail.id);
+    setPayrollDetail({
+      ...payrollDetail,
+      status: 'unpaid',
+      paidDate: undefined,
+      signature: undefined,
+      signBy: undefined,
+      operator: undefined,
+    });
+  }
+
+  function handleExportProject(projectName: string) {
+    exportProjectReconciliation(projectWorks, workers, projectName, yearMonth);
+  }
+
+  const tabs: { key: TabKey; label: string; icon: React.ReactNode }[] = [
+    { key: 'salary', label: '工资报表', icon: <Wallet className="w-4 h-4" /> },
+    { key: 'payroll', label: '月度发薪单', icon: <FileCheck className="w-4 h-4" /> },
+    { key: 'ledger', label: '发放记录台账', icon: <BookOpen className="w-4 h-4" /> },
+  ];
 
   return (
     <div className="space-y-6">
@@ -228,31 +373,23 @@ export default function Salary() {
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-1.5 inline-flex gap-1">
-        <button
-          onClick={() => setActiveTab('salary')}
-          className={`px-5 py-2.5 rounded-xl font-medium text-sm transition-all flex items-center gap-2 ${
-            activeTab === 'salary'
-              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
-              : 'text-slate-600 hover:bg-slate-50'
-          }`}
-        >
-          <Wallet className="w-4 h-4" />
-          工资报表
-        </button>
-        <button
-          onClick={() => setActiveTab('payroll')}
-          className={`px-5 py-2.5 rounded-xl font-medium text-sm transition-all flex items-center gap-2 ${
-            activeTab === 'payroll'
-              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
-              : 'text-slate-600 hover:bg-slate-50'
-          }`}
-        >
-          <FileCheck className="w-4 h-4" />
-          月度发薪单
-        </button>
+        {tabs.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveTab(tab.key)}
+            className={`px-5 py-2.5 rounded-xl font-medium text-sm transition-all flex items-center gap-2 ${
+              activeTab === tab.key
+                ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/20'
+                : 'text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            {tab.icon}
+            {tab.label}
+          </button>
+        ))}
       </div>
 
-      {activeTab === 'salary' ? (
+      {activeTab === 'salary' && (
         <>
           <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
             <div className="bg-gradient-to-br from-emerald-500 to-emerald-600 text-white rounded-2xl p-4 shadow-lg">
@@ -279,11 +416,27 @@ export default function Salary() {
 
           {monthProjectWorks.length > 0 && (
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-              <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center gap-2">
-                <Building2 className="w-5 h-5 text-sky-600" />
-                <h3 className="font-bold text-slate-800">
-                  本月包活工程量汇总（共 {monthProjectWorks.length} 条记录）
-                </h3>
+              <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Building2 className="w-5 h-5 text-sky-600" />
+                  <h3 className="font-bold text-slate-800">
+                    本月包活工程量汇总（共 {monthProjectWorks.length} 条记录）
+                  </h3>
+                </div>
+                {projectNames.length > 0 && (
+                  <div className="flex gap-2">
+                    {projectNames.map((name) => (
+                      <button
+                        key={name}
+                        onClick={() => handleExportProject(name)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg border border-sky-200 text-sky-700 bg-sky-50 hover:bg-sky-100 transition-colors"
+                      >
+                        <FileSpreadsheet className="w-3.5 h-3.5" />
+                        导出「{name}」对账单
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -396,7 +549,9 @@ export default function Salary() {
             })}
           </div>
         </>
-      ) : (
+      )}
+
+      {activeTab === 'payroll' && (
         <>
           <div className="flex flex-wrap items-center justify-between gap-4 bg-white rounded-2xl shadow-sm border border-slate-100 p-5">
             <div className="grid grid-cols-2 md:grid-cols-5 gap-4 w-full">
@@ -482,6 +637,8 @@ export default function Salary() {
                             <th className="px-4 py-3 font-medium text-right">借支扣除</th>
                             <th className="px-4 py-3 font-medium text-right">实发工资</th>
                             <th className="px-4 py-3 font-medium text-center">发薪状态</th>
+                            <th className="px-4 py-3 font-medium">签字/代签</th>
+                            <th className="px-4 py-3 font-medium">经办人</th>
                             <th className="px-4 py-3 font-medium">发薪日期</th>
                             <th className="px-4 py-3 font-medium text-center">操作</th>
                           </tr>
@@ -527,6 +684,21 @@ export default function Salary() {
                                     {PAYROLL_STATUS_LABELS[slip.status]}
                                   </span>
                                 </td>
+                                <td className="px-4 py-3 text-xs text-slate-600">
+                                  {slip.signature ? (
+                                    <span>
+                                      <span className="font-serif text-sm text-indigo-700">{slip.signature}</span>
+                                      {slip.signBy && (
+                                        <span className="text-slate-400 ml-1">（{slip.signBy}代签）</span>
+                                      )}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-300">-</span>
+                                  )}
+                                </td>
+                                <td className="px-4 py-3 text-xs text-slate-600">
+                                  {slip.operator || <span className="text-slate-300">-</span>}
+                                </td>
                                 <td className="px-4 py-3 text-slate-600 text-xs">
                                   {slip.paidDate || '-'}
                                 </td>
@@ -539,26 +711,25 @@ export default function Salary() {
                                     >
                                       <FileCheck className="w-4 h-4" />
                                     </button>
-                                    <button
-                                      onClick={() =>
-                                        updatePayrollStatus(
-                                          slip.id,
-                                          slip.status === 'paid' ? 'unpaid' : 'paid'
-                                        )
-                                      }
-                                      className={`p-1.5 rounded-lg transition-colors ${
-                                        slip.status === 'paid'
-                                          ? 'text-slate-500 hover:bg-slate-100'
-                                          : 'text-emerald-600 hover:bg-emerald-50'
-                                      }`}
-                                      title={slip.status === 'paid' ? '标记未发' : '标记已发'}
-                                    >
-                                      {slip.status === 'paid' ? (
+                                    {slip.status === 'unpaid' ? (
+                                      <button
+                                        onClick={() => openSignModal(slip)}
+                                        className="p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 transition-colors"
+                                        title="确认发放（需签字）"
+                                      >
+                                        <PenLine className="w-4 h-4" />
+                                      </button>
+                                    ) : (
+                                      <button
+                                        onClick={() => {
+                                          revertPayrollSlip(slip.id);
+                                        }}
+                                        className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 transition-colors"
+                                        title="回退为未发"
+                                      >
                                         <CircleDashed className="w-4 h-4" />
-                                      ) : (
-                                        <CheckCircle2 className="w-4 h-4" />
-                                      )}
-                                    </button>
+                                      </button>
+                                    )}
                                   </div>
                                 </td>
                               </tr>
@@ -570,6 +741,157 @@ export default function Salary() {
                   </div>
                 );
               })}
+            </div>
+          )}
+        </>
+      )}
+
+      {activeTab === 'ledger' && (
+        <>
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5">
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-slate-600">发放状态：</span>
+                <div className="flex gap-1">
+                  {(Object.keys(PAYROLL_FILTER_LABELS) as PayrollFilterStatus[]).map((key) => (
+                    <button
+                      key={key}
+                      onClick={() => setLedgerFilter(key)}
+                      className={`px-3 py-1.5 text-sm rounded-lg transition-colors ${
+                        ledgerFilter === key
+                          ? 'bg-indigo-600 text-white'
+                          : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                      }`}
+                    >
+                      {PAYROLL_FILTER_LABELS[key]}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-slate-600">工种：</span>
+                <select
+                  value={ledgerTradeFilter}
+                  onChange={(e) => setLedgerTradeFilter(e.target.value as Trade | 'all')}
+                  className="px-3 py-1.5 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="all">全部工种</option>
+                  {(Object.keys(TRADE_LABELS) as Trade[]).map((t) => (
+                    <option key={t} value={t}>{TRADE_LABELS[t]}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+          </div>
+
+          {payrollSlips.length === 0 ? (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-16 text-center text-slate-400">
+              <BookOpen className="w-12 h-12 mx-auto mb-3 opacity-40" />
+              <p>暂无发薪记录，请先生成发薪单</p>
+            </div>
+          ) : (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+              <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center gap-2">
+                <BookOpen className="w-5 h-5 text-indigo-600" />
+                <h3 className="font-bold text-slate-800">
+                  发放记录台账 · {yearMonth}
+                </h3>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-slate-50 text-slate-600 text-left">
+                      <th className="px-4 py-3 font-medium">工人姓名</th>
+                      <th className="px-4 py-3 font-medium">工种</th>
+                      <th className="px-4 py-3 font-medium text-right">实发金额</th>
+                      <th className="px-4 py-3 font-medium text-center">发放状态</th>
+                      <th className="px-4 py-3 font-medium">发放时间</th>
+                      <th className="px-4 py-3 font-medium">经办人</th>
+                      <th className="px-4 py-3 font-medium">签字</th>
+                      <th className="px-4 py-3 font-medium">备注</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ledgerFilter === 'all' || ledgerFilter === 'paid' || ledgerFilter === 'partial'
+                      ? paymentRecords
+                          .filter((r) => {
+                            if (ledgerTradeFilter !== 'all') {
+                              const tradeWorkerIds = new Set(
+                                workers.filter((w) => w.trade === ledgerTradeFilter).map((w) => w.id)
+                              );
+                              return tradeWorkerIds.has(r.workerId);
+                            }
+                            return true;
+                          })
+                          .map((record) => {
+                            const w = workerMap.get(record.workerId);
+                            return (
+                              <tr key={record.id} className="border-t border-slate-100 hover:bg-slate-50/50">
+                                <td className="px-4 py-3 font-medium text-slate-800">{w?.name || '未知'}</td>
+                                <td className="px-4 py-3 text-slate-600">{w ? TRADE_LABELS[w.trade] : '-'}</td>
+                                <td className="px-4 py-3 text-right font-bold text-emerald-600">
+                                  ¥{record.amount.toLocaleString()}
+                                </td>
+                                <td className="px-4 py-3 text-center">
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
+                                    <CheckCircle2 className="w-3 h-3" />
+                                    已发
+                                  </span>
+                                </td>
+                                <td className="px-4 py-3 text-slate-600 text-xs">{record.paidDate}</td>
+                                <td className="px-4 py-3 text-slate-700 text-sm">{record.operator}</td>
+                                <td className="px-4 py-3 text-xs">
+                                  {record.signature ? (
+                                    <span>
+                                      <span className="font-serif text-sm text-indigo-700">{record.signature}</span>
+                                      {record.signBy && (
+                                        <span className="text-slate-400 ml-1">（{record.signBy}代签）</span>
+                                      )}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-300">-</span>
+                                  )}
+                                </td>
+                                <td className="px-4 py-3 text-xs text-slate-500">{record.remark || '-'}</td>
+                              </tr>
+                            );
+                          })
+                      : null}
+                    {(ledgerFilter === 'all' || ledgerFilter === 'unpaid') &&
+                      payrollSlips
+                        .filter((p) => p.status === 'unpaid')
+                        .filter((p) => {
+                          if (ledgerTradeFilter !== 'all') {
+                            const w = workerMap.get(p.workerId);
+                            return w?.trade === ledgerTradeFilter;
+                          }
+                          return true;
+                        })
+                        .map((slip) => {
+                          const w = workerMap.get(slip.workerId);
+                          return (
+                            <tr key={`unpaid-${slip.id}`} className="border-t border-slate-100 hover:bg-rose-50/30">
+                              <td className="px-4 py-3 font-medium text-slate-800">{w?.name || '未知'}</td>
+                              <td className="px-4 py-3 text-slate-600">{w ? TRADE_LABELS[w.trade] : '-'}</td>
+                              <td className="px-4 py-3 text-right font-bold text-rose-600">
+                                ¥{slip.netSalary.toLocaleString()}
+                              </td>
+                              <td className="px-4 py-3 text-center">
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-medium bg-slate-100 text-slate-600">
+                                  <CircleDashed className="w-3 h-3" />
+                                  未发
+                                </span>
+                              </td>
+                              <td className="px-4 py-3 text-slate-300 text-xs">-</td>
+                              <td className="px-4 py-3 text-slate-300 text-sm">-</td>
+                              <td className="px-4 py-3 text-slate-300 text-xs">-</td>
+                              <td className="px-4 py-3 text-slate-300 text-xs">-</td>
+                            </tr>
+                          );
+                        })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </>
@@ -683,10 +1005,9 @@ export default function Salary() {
         )}
       </Modal>
 
-      <Modal open={!!payrollDetail} title="发薪确认单" onClose={() => setPayrollDetail(null)}>
+      <Modal open={!!payrollDetail && !signModalOpen} title="发薪确认单" onClose={() => setPayrollDetail(null)}>
         {payrollDetail && (() => {
           const w = workerMap.get(payrollDetail.workerId);
-          const signSlip = payrollDetail;
           return (
             <div className="space-y-5">
               <div className="text-center pb-4 border-b border-slate-100">
@@ -714,44 +1035,44 @@ export default function Salary() {
               <div className="bg-slate-50 rounded-xl p-4 space-y-2.5">
                 <div className="flex justify-between py-1">
                   <span className="text-slate-600">出勤天数</span>
-                  <span className="font-semibold text-emerald-600">{signSlip.presentDays} 天</span>
+                  <span className="font-semibold text-emerald-600">{payrollDetail.presentDays} 天</span>
                 </div>
                 <div className="flex justify-between py-1">
                   <span className="text-slate-600">请假 / 旷工</span>
                   <span className="font-semibold text-slate-700">
-                    {signSlip.leaveDays} / {signSlip.absentDays}
+                    {payrollDetail.leaveDays} / {payrollDetail.absentDays}
                   </span>
                 </div>
                 <div className="flex justify-between py-1">
                   <span className="text-slate-600">点工工资</span>
                   <span className="font-semibold text-slate-800">
-                    ¥{signSlip.dailyWage.toLocaleString()}
+                    ¥{payrollDetail.dailyWage.toLocaleString()}
                   </span>
                 </div>
                 <div className="flex justify-between py-1">
                   <span className="text-slate-600">
-                    包活工资（{signSlip.totalArea}㎡）
+                    包活工资（{payrollDetail.totalArea}㎡）
                   </span>
                   <span className="font-semibold text-slate-800">
-                    ¥{signSlip.projectWage.toLocaleString()}
+                    ¥{payrollDetail.projectWage.toLocaleString()}
                   </span>
                 </div>
                 <div className="flex justify-between py-1.5 border-t border-slate-200 mt-2 pt-2">
                   <span className="font-medium text-slate-700">应发工资</span>
                   <span className="font-bold text-indigo-600 text-lg">
-                    ¥{signSlip.grossSalary.toLocaleString()}
+                    ¥{payrollDetail.grossSalary.toLocaleString()}
                   </span>
                 </div>
                 <div className="flex justify-between py-1">
                   <span className="text-slate-600">借支扣除</span>
                   <span className="font-semibold text-amber-600">
-                    -¥{signSlip.totalAdvance.toLocaleString()}
+                    -¥{payrollDetail.totalAdvance.toLocaleString()}
                   </span>
                 </div>
                 <div className="flex justify-between py-2 border-t border-slate-200 mt-2 pt-3 bg-emerald-50/70 -mx-4 px-4 -mb-4 rounded-b-xl">
                   <span className="font-bold text-slate-800 text-base">实发工资（大写）</span>
                   <span className="font-bold text-emerald-600 text-xl">
-                    ¥{signSlip.netSalary.toLocaleString()}
+                    ¥{payrollDetail.netSalary.toLocaleString()}
                   </span>
                 </div>
               </div>
@@ -760,12 +1081,13 @@ export default function Salary() {
                 <div className="border border-dashed border-slate-300 rounded-xl p-3 text-center">
                   <p className="text-xs text-slate-500 mb-2">工人签字</p>
                   <div className="h-10 flex items-center justify-center">
-                    {signSlip.signature ? (
-                      <span className="font-serif text-2xl text-indigo-700">
-                        {signSlip.signature}
+                    {payrollDetail.signature ? (
+                      <span>
+                        <span className="font-serif text-2xl text-indigo-700">{payrollDetail.signature}</span>
+                        {payrollDetail.signBy && (
+                          <span className="text-xs text-slate-400 ml-2">（{payrollDetail.signBy}代签）</span>
+                        )}
                       </span>
-                    ) : signSlip.status === 'paid' ? (
-                      <PenLine className="w-5 h-5 text-slate-400" />
                     ) : (
                       <span className="text-slate-300 text-sm">未签字</span>
                     )}
@@ -776,26 +1098,27 @@ export default function Salary() {
                   <div className="h-10 flex items-center justify-center">
                     <span
                       className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium ${
-                        signSlip.status === 'paid'
+                        payrollDetail.status === 'paid'
                           ? 'bg-emerald-100 text-emerald-700'
                           : 'bg-slate-100 text-slate-600'
                       }`}
                     >
-                      {signSlip.status === 'paid' ? (
+                      {payrollDetail.status === 'paid' ? (
                         <CheckCircle2 className="w-4 h-4" />
                       ) : (
                         <CircleDashed className="w-4 h-4" />
                       )}
-                      {PAYROLL_STATUS_LABELS[signSlip.status]}
+                      {PAYROLL_STATUS_LABELS[payrollDetail.status]}
                     </span>
                   </div>
                 </div>
               </div>
 
-              {signSlip.paidDate && (
-                <p className="text-center text-xs text-slate-500">
-                  发薪日期：{signSlip.paidDate}
-                </p>
+              {payrollDetail.paidDate && (
+                <div className="text-center text-xs text-slate-500 space-y-0.5">
+                  <p>发薪日期：{payrollDetail.paidDate}</p>
+                  {payrollDetail.operator && <p>经办人：{payrollDetail.operator}</p>}
+                </div>
               )}
 
               <div className="flex gap-3 pt-2 border-t border-slate-100">
@@ -805,33 +1128,120 @@ export default function Salary() {
                 >
                   关闭
                 </button>
-                {signSlip.status === 'unpaid' ? (
+                {payrollDetail.status === 'unpaid' ? (
                   <button
-                    onClick={() => {
-                      updatePayrollStatus(signSlip.id, 'paid');
-                      setPayrollDetail({ ...signSlip, status: 'paid', paidDate: todayStr() });
-                    }}
+                    onClick={() => openSignModal(payrollDetail)}
                     className="flex-1 px-4 py-2.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-colors shadow-md shadow-emerald-600/20 inline-flex items-center justify-center gap-2"
                   >
-                    <CheckCircle2 className="w-4 h-4" />
-                    确认已发
+                    <PenLine className="w-4 h-4" />
+                    确认发放（签字）
                   </button>
                 ) : (
                   <button
-                    onClick={() => {
-                      updatePayrollStatus(signSlip.id, 'unpaid');
-                      setPayrollDetail({ ...signSlip, status: 'unpaid', paidDate: undefined });
-                    }}
+                    onClick={handleRevertPay}
                     className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 transition-colors inline-flex items-center justify-center gap-2"
                   >
                     <CircleDashed className="w-4 h-4" />
-                    标记未发
+                    回退为未发
                   </button>
                 )}
               </div>
             </div>
           );
         })()}
+      </Modal>
+
+      <Modal open={signModalOpen} title="确认发放 · 签收录入" onClose={() => setSignModalOpen(false)}>
+        <div className="space-y-4">
+          {payrollDetail && (() => {
+            const w = workerMap.get(payrollDetail.workerId);
+            return (
+              <>
+                <div className="bg-slate-50 rounded-xl p-3 flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-gradient-to-br from-indigo-100 to-indigo-200 flex items-center justify-center text-indigo-600 font-bold">
+                    {w?.name[0] || '?'}
+                  </div>
+                  <div>
+                    <p className="font-bold text-slate-800">{w?.name || '未知工人'}</p>
+                    <p className="text-sm text-slate-500">
+                      实发：<span className="font-bold text-emerald-600">¥{payrollDetail.netSalary.toLocaleString()}</span>
+                    </p>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                    工人签字 <span className="text-slate-400 font-normal">（手写签名录入）</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={signForm.signature}
+                    onChange={(e) => setSignForm({ ...signForm, signature: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    placeholder="录入工人签字"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                    代签人 <span className="text-slate-400 font-normal">（如非本人签字，填写代签人姓名）</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={signForm.signBy}
+                    onChange={(e) => setSignForm({ ...signForm, signBy: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    placeholder="如：张建国（代签）"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                    经办人 <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={signForm.operator}
+                    onChange={(e) => setSignForm({ ...signForm, operator: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    placeholder="发放工资的经办人姓名"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                    备注 <span className="text-slate-400 font-normal">（选填）</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={signForm.remark}
+                    onChange={(e) => setSignForm({ ...signForm, remark: e.target.value })}
+                    className="w-full px-4 py-2.5 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    placeholder="如：现金发放、银行转账等"
+                  />
+                </div>
+
+                <div className="flex gap-3 pt-2 border-t border-slate-100">
+                  <button
+                    onClick={() => setSignModalOpen(false)}
+                    className="flex-1 px-4 py-2.5 border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 transition-colors"
+                  >
+                    取消
+                  </button>
+                  <button
+                    onClick={handleConfirmPay}
+                    disabled={!signForm.operator.trim()}
+                    className="flex-1 px-4 py-2.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 transition-colors shadow-md shadow-emerald-600/20 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    确认已发
+                  </button>
+                </div>
+              </>
+            );
+          })()}
+        </div>
       </Modal>
 
       <Modal open={workModalOpen} title="登记包活工作量" onClose={() => setWorkModalOpen(false)}>

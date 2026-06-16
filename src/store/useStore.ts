@@ -7,10 +7,11 @@ import {
   AttendanceStatus,
   PayrollSlip,
   PayrollStatus,
+  PaymentRecord,
   SalaryDetail,
 } from '@/types';
 import { generateId, todayStr } from '@/utils/date';
-import { calculateAllSalaries, calculateWorkerSalary } from '@/utils/salary';
+import { calculateAllSalaries } from '@/utils/salary';
 
 interface AppState {
   initialized: boolean;
@@ -19,6 +20,7 @@ interface AppState {
   advances: Advance[];
   projectWorks: ProjectWork[];
   payrollSlips: PayrollSlip[];
+  paymentRecords: PaymentRecord[];
 
   initialize: () => void;
 
@@ -42,12 +44,11 @@ interface AppState {
   getProjectWorksByWorkerMonth: (workerId: string, yearMonth: string) => ProjectWork[];
 
   generatePayrollSlips: (yearMonth: string) => void;
-  updatePayrollStatus: (
+  confirmPayrollSlip: (
     slipId: string,
-    status: PayrollStatus,
-    paidDate?: string,
-    signature?: string
+    data: { signature?: string; signBy?: string; operator: string; remark?: string }
   ) => void;
+  revertPayrollSlip: (slipId: string) => void;
   batchUpdatePayrollStatusByTrade: (
     yearMonth: string,
     trade: string,
@@ -56,13 +57,15 @@ interface AppState {
   deletePayrollSlip: (id: string) => void;
   getPayrollSlipsByMonth: (yearMonth: string) => PayrollSlip[];
 
+  getPaymentRecordsByMonth: (yearMonth: string) => PaymentRecord[];
+
   calculateAllSalaries: (yearMonth: string) => SalaryDetail[];
 
   loadFromStorage: () => void;
   saveToStorage: () => void;
 }
 
-const STORAGE_KEY = 'construction_site_payroll_v2';
+const STORAGE_KEY = 'construction_site_payroll_v3';
 
 function getMockData(): {
   workers: Worker[];
@@ -70,6 +73,7 @@ function getMockData(): {
   advances: Advance[];
   projectWorks: ProjectWork[];
   payrollSlips: PayrollSlip[];
+  paymentRecords: PaymentRecord[];
 } {
   const now = new Date();
   const thisYear = now.getFullYear();
@@ -137,7 +141,7 @@ function getMockData(): {
     { id: generateId(), workerId: workers[8].id, date: `${ym}-08`, project: '阳光花园小区', building: '1号楼', floor: '1层', area: 120, remark: '内墙腻子', createdAt: todayStr() },
   ];
 
-  return { workers, attendances, advances, projectWorks, payrollSlips: [] };
+  return { workers, attendances, advances, projectWorks, payrollSlips: [], paymentRecords: [] };
 }
 
 export const useStore = create<AppState>((set, get) => ({
@@ -147,6 +151,7 @@ export const useStore = create<AppState>((set, get) => ({
   advances: [],
   projectWorks: [],
   payrollSlips: [],
+  paymentRecords: [],
 
   initialize: () => {
     if (!get().initialized) {
@@ -172,6 +177,7 @@ export const useStore = create<AppState>((set, get) => ({
       advances: s.advances.filter((a) => a.workerId !== id),
       projectWorks: s.projectWorks.filter((p) => p.workerId !== id),
       payrollSlips: s.payrollSlips.filter((p) => p.workerId !== id),
+      paymentRecords: s.paymentRecords.filter((p) => p.workerId !== id),
     }));
     get().saveToStorage();
   },
@@ -305,48 +311,120 @@ export const useStore = create<AppState>((set, get) => ({
     get().saveToStorage();
   },
 
-  updatePayrollStatus: (slipId, status, paidDate, signature) => {
+  confirmPayrollSlip: (slipId, data) => {
+    const slip = get().payrollSlips.find((p) => p.id === slipId);
+    if (!slip || slip.status === 'paid') return;
+
+    const paidDate = todayStr();
+    const record: PaymentRecord = {
+      id: generateId(),
+      yearMonth: slip.yearMonth,
+      workerId: slip.workerId,
+      slipId: slip.id,
+      paidDate,
+      amount: slip.netSalary,
+      operator: data.operator,
+      signature: data.signature,
+      signBy: data.signBy,
+      remark: data.remark,
+      createdAt: todayStr(),
+    };
+
     set((s) => ({
       payrollSlips: s.payrollSlips.map((p) =>
         p.id === slipId
           ? {
               ...p,
-              status,
-              paidDate: status === 'paid' ? paidDate || todayStr() : undefined,
-              signature: status === 'paid' ? signature || p.signature : undefined,
+              status: 'paid',
+              paidDate,
+              signature: data.signature,
+              signBy: data.signBy,
+              operator: data.operator,
+              remark: data.remark || p.remark,
             }
           : p
       ),
+      paymentRecords: [...s.paymentRecords, record],
+    }));
+    get().saveToStorage();
+  },
+
+  revertPayrollSlip: (slipId) => {
+    set((s) => ({
+      payrollSlips: s.payrollSlips.map((p) =>
+        p.id === slipId
+          ? {
+              ...p,
+              status: 'unpaid',
+              paidDate: undefined,
+              signature: undefined,
+              signBy: undefined,
+              operator: undefined,
+            }
+          : p
+      ),
+      paymentRecords: s.paymentRecords.filter((r) => r.slipId !== slipId),
     }));
     get().saveToStorage();
   },
 
   batchUpdatePayrollStatusByTrade: (yearMonth, trade, status) => {
-    const { workers, payrollSlips } = get();
+    const { workers } = get();
     const tradeWorkerIds = new Set(
       workers.filter((w) => w.trade === trade).map((w) => w.id)
     );
-    set((s) => ({
-      payrollSlips: s.payrollSlips.map((p) =>
-        p.yearMonth === yearMonth && tradeWorkerIds.has(p.workerId)
-          ? {
-              ...p,
-              status,
-              paidDate: status === 'paid' ? todayStr() : p.paidDate,
-            }
-          : p
-      ),
-    }));
+
+    if (status === 'unpaid') {
+      set((s) => {
+        const slipIdsToRevert = s.payrollSlips
+          .filter((p) => p.yearMonth === yearMonth && tradeWorkerIds.has(p.workerId) && p.status === 'paid')
+          .map((p) => p.id);
+        return {
+          payrollSlips: s.payrollSlips.map((p) =>
+            p.yearMonth === yearMonth && tradeWorkerIds.has(p.workerId)
+              ? {
+                  ...p,
+                  status: 'unpaid',
+                  paidDate: undefined,
+                  signature: undefined,
+                  signBy: undefined,
+                  operator: undefined,
+                }
+              : p
+          ),
+          paymentRecords: s.paymentRecords.filter((r) => !slipIdsToRevert.includes(r.slipId)),
+        };
+      });
+    } else {
+      set((s) => ({
+        payrollSlips: s.payrollSlips.map((p) =>
+          p.yearMonth === yearMonth && tradeWorkerIds.has(p.workerId) && p.status === 'unpaid'
+            ? {
+                ...p,
+                status: 'paid',
+                paidDate: todayStr(),
+                operator: '批量发放',
+              }
+            : p
+        ),
+      }));
+    }
     get().saveToStorage();
   },
 
   deletePayrollSlip: (id) => {
-    set((s) => ({ payrollSlips: s.payrollSlips.filter((p) => p.id !== id) }));
+    set((s) => ({
+      payrollSlips: s.payrollSlips.filter((p) => p.id !== id),
+      paymentRecords: s.paymentRecords.filter((r) => r.slipId !== id),
+    }));
     get().saveToStorage();
   },
 
   getPayrollSlipsByMonth: (yearMonth) =>
     get().payrollSlips.filter((p) => p.yearMonth === yearMonth),
+
+  getPaymentRecordsByMonth: (yearMonth) =>
+    get().paymentRecords.filter((r) => r.yearMonth === yearMonth),
 
   calculateAllSalaries: (yearMonth) => {
     const { workers, attendances, advances, projectWorks } = get();
@@ -370,6 +448,7 @@ export const useStore = create<AppState>((set, get) => ({
           advances: parsed.advances || [],
           projectWorks: parsed.projectWorks || [],
           payrollSlips: parsed.payrollSlips || [],
+          paymentRecords: parsed.paymentRecords || [],
         });
       } else {
         const mock = getMockData();
@@ -384,8 +463,7 @@ export const useStore = create<AppState>((set, get) => ({
 
   saveToStorage: () => {
     try {
-      const { workers, attendances, advances, projectWorks, payrollSlips } =
-        get();
+      const { workers, attendances, advances, projectWorks, payrollSlips, paymentRecords } = get();
       localStorage.setItem(
         STORAGE_KEY,
         JSON.stringify({
@@ -394,6 +472,7 @@ export const useStore = create<AppState>((set, get) => ({
           advances,
           projectWorks,
           payrollSlips,
+          paymentRecords,
         })
       );
     } catch {

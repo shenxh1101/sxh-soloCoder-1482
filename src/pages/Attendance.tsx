@@ -280,6 +280,9 @@ export default function Attendance() {
           attendances={workerMonthAttendances}
           onClose={() => setCalendarWorker(null)}
           onChangeMonth={(ym) => setCalendarYm(ym)}
+          onEditDay={(workerId, date, status) => {
+            markAttendance(workerId, date, status);
+          }}
         />
       )}
     </div>

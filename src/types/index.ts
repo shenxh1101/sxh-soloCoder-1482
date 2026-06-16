@@ -40,6 +40,15 @@ export const PAYROLL_STATUS_LABELS: Record<PayrollStatus, string> = {
   paid: '已发',
 };
 
+export type PayrollFilterStatus = 'all' | 'paid' | 'unpaid' | 'partial';
+
+export const PAYROLL_FILTER_LABELS: Record<PayrollFilterStatus, string> = {
+  all: '全部',
+  paid: '已发',
+  unpaid: '未发',
+  partial: '部分发放',
+};
+
 export interface Worker {
   id: string;
   name: string;
@@ -98,6 +107,22 @@ export interface PayrollSlip {
   status: PayrollStatus;
   paidDate?: string;
   signature?: string;
+  signBy?: string;
+  operator?: string;
+  remark?: string;
+  createdAt: string;
+}
+
+export interface PaymentRecord {
+  id: string;
+  yearMonth: string;
+  workerId: string;
+  slipId: string;
+  paidDate: string;
+  amount: number;
+  operator: string;
+  signature?: string;
+  signBy?: string;
   remark?: string;
   createdAt: string;
 }
