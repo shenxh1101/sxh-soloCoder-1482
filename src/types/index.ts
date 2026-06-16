@@ -2,6 +2,8 @@ export type Trade = 'carpenter' | 'mason' | 'plumber_electrician' | 'painter';
 
 export type AttendanceStatus = 'present' | 'leave' | 'absent';
 
+export type PayrollStatus = 'unpaid' | 'paid';
+
 export const TRADE_LABELS: Record<Trade, string> = {
   carpenter: '木工',
   mason: '瓦工',
@@ -15,10 +17,27 @@ export const ATTENDANCE_LABELS: Record<AttendanceStatus, string> = {
   absent: '旷工',
 };
 
-export const ATTENDANCE_COLORS: Record<AttendanceStatus, string> = {
+export const ATTENDANCE_BG_COLORS: Record<AttendanceStatus, string> = {
   present: 'bg-emerald-500',
   leave: 'bg-amber-500',
   absent: 'bg-rose-500',
+};
+
+export const ATTENDANCE_TEXT_COLORS: Record<AttendanceStatus, string> = {
+  present: 'text-emerald-600',
+  leave: 'text-amber-600',
+  absent: 'text-rose-600',
+};
+
+export const ATTENDANCE_LIGHT_BG: Record<AttendanceStatus, string> = {
+  present: 'bg-emerald-50',
+  leave: 'bg-amber-50',
+  absent: 'bg-rose-50',
+};
+
+export const PAYROLL_STATUS_LABELS: Record<PayrollStatus, string> = {
+  unpaid: '未发',
+  paid: '已发',
 };
 
 export interface Worker {
@@ -55,7 +74,30 @@ export interface ProjectWork {
   id: string;
   workerId: string;
   date: string;
+  project?: string;
+  building?: string;
+  floor?: string;
   area: number;
+  remark?: string;
+  createdAt: string;
+}
+
+export interface PayrollSlip {
+  id: string;
+  workerId: string;
+  yearMonth: string;
+  presentDays: number;
+  leaveDays: number;
+  absentDays: number;
+  dailyWage: number;
+  totalArea: number;
+  projectWage: number;
+  grossSalary: number;
+  totalAdvance: number;
+  netSalary: number;
+  status: PayrollStatus;
+  paidDate?: string;
+  signature?: string;
   remark?: string;
   createdAt: string;
 }
@@ -74,4 +116,13 @@ export interface SalaryDetail {
   totalAdvance: number;
   grossSalary: number;
   netSalary: number;
+}
+
+export interface ProjectWorkGroup {
+  project: string;
+  building: string;
+  floor: string;
+  totalArea: number;
+  totalWage: number;
+  items: ProjectWork[];
 }

@@ -1,9 +1,10 @@
 import { useState, useMemo } from 'react';
-import { Calendar, Download, Check, X, AlertCircle, RefreshCw } from 'lucide-react';
+import { Calendar as CalendarIcon, Download, Check, X, AlertCircle, RefreshCw, CalendarDays } from 'lucide-react';
 import { useStore } from '@/store/useStore';
-import { Trade, AttendanceStatus, TRADE_LABELS, ATTENDANCE_LABELS } from '@/types';
-import { todayStr } from '@/utils/date';
+import { Trade, AttendanceStatus, TRADE_LABELS, ATTENDANCE_LABELS, Worker } from '@/types';
+import { todayStr, getCurrentYearMonth } from '@/utils/date';
 import { exportAttendance } from '@/utils/export';
+import AttendanceCalendar from '@/components/AttendanceCalendar/AttendanceCalendar';
 
 const STATUS_OPTIONS: AttendanceStatus[] = ['present', 'leave', 'absent'];
 
@@ -20,9 +21,17 @@ const STATUS_INACTIVE: Record<AttendanceStatus, string> = {
 };
 
 export default function Attendance() {
-  const { workers, attendances, markAttendance, batchMarkAttendance, clearAttendanceByDate } = useStore();
+  const {
+    workers,
+    attendances,
+    markAttendance,
+    batchMarkAttendance,
+    clearAttendanceByDate,
+  } = useStore();
   const [selectedDate, setSelectedDate] = useState(todayStr());
   const [pending, setPending] = useState<Map<string, AttendanceStatus>>(new Map());
+  const [calendarWorker, setCalendarWorker] = useState<Worker | null>(null);
+  const [calendarYm, setCalendarYm] = useState(getCurrentYearMonth());
 
   const attendanceMap = useMemo(() => {
     const map = new Map<string, AttendanceStatus>();
@@ -32,6 +41,13 @@ export default function Attendance() {
     pending.forEach((status, id) => map.set(id, status));
     return map;
   }, [attendances, selectedDate, pending]);
+
+  const workerMonthAttendances = useMemo(() => {
+    if (!calendarWorker) return [];
+    return attendances.filter(
+      (a) => a.workerId === calendarWorker.id && a.date.startsWith(calendarYm)
+    );
+  }, [calendarWorker, calendarYm, attendances]);
 
   function cycleStatus(workerId: string) {
     const current = attendanceMap.get(workerId);
@@ -82,12 +98,12 @@ export default function Attendance() {
         <div>
           <h1 className="text-2xl font-bold text-slate-800">考勤打卡</h1>
           <p className="text-slate-500 mt-1">
-            {isToday ? '今天' : selectedDate} 的考勤记录
+            {isToday ? '今天' : selectedDate} 的考勤记录，点击工人姓名旁的日历可查看月历
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
           <div className="relative">
-            <Calendar className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <CalendarIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
               type="date"
               value={selectedDate}
@@ -99,7 +115,9 @@ export default function Attendance() {
             />
           </div>
           <button
-            onClick={() => exportAttendance(workers, attendances, selectedDate.slice(0, 7))}
+            onClick={() =>
+              exportAttendance(workers, attendances, selectedDate.slice(0, 7))
+            }
             className="inline-flex items-center gap-2 px-4 py-2.5 bg-white border border-slate-200 text-slate-700 rounded-xl hover:bg-slate-50 transition-colors shadow-sm"
           >
             <Download className="w-4 h-4" />
@@ -112,16 +130,26 @@ export default function Attendance() {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-4">
             {stats.map(({ status, count }) => {
-              const Icon = status === 'present' ? Check : status === 'leave' ? AlertCircle : X;
+              const Icon =
+                status === 'present'
+                  ? Check
+                  : status === 'leave'
+                    ? AlertCircle
+                    : X;
               const colors: Record<AttendanceStatus, string> = {
                 present: 'text-emerald-600 bg-emerald-50',
                 leave: 'text-amber-600 bg-amber-50',
                 absent: 'text-rose-600 bg-rose-50',
               };
               return (
-                <div key={status} className={`flex items-center gap-2 px-3 py-1.5 rounded-xl ${colors[status]}`}>
+                <div
+                  key={status}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-xl ${colors[status]}`}
+                >
                   <Icon className="w-4 h-4" />
-                  <span className="font-semibold">{ATTENDANCE_LABELS[status]} {count}人</span>
+                  <span className="font-semibold">
+                    {ATTENDANCE_LABELS[status]} {count}人
+                  </span>
                 </div>
               );
             })}
@@ -154,13 +182,20 @@ export default function Attendance() {
         <div className="space-y-4">
           {workersByTrade.map(({ trade, list }) => {
             if (list.length === 0) return null;
-            const allPresent = list.every((w) => attendanceMap.get(w.id) === 'present');
+            const allPresent = list.every(
+              (w) => attendanceMap.get(w.id) === 'present'
+            );
             return (
-              <div key={trade} className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+              <div
+                key={trade}
+                className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden"
+              >
                 <div className="flex flex-wrap items-center justify-between gap-3 p-4 border-b border-slate-100 bg-slate-50/50">
                   <h3 className="font-bold text-slate-800 flex items-center gap-2">
                     {TRADE_LABELS[trade]}
-                    <span className="text-sm font-normal text-slate-500">({list.length}人)</span>
+                    <span className="text-sm font-normal text-slate-500">
+                      ({list.length}人)
+                    </span>
                   </h3>
                   <div className="flex gap-2">
                     {STATUS_OPTIONS.map((s) => (
@@ -183,21 +218,52 @@ export default function Attendance() {
                     const status = attendanceMap.get(w.id);
                     const hasPending = pending.has(w.id);
                     return (
-                      <button
+                      <div
                         key={w.id}
-                        onClick={() => cycleStatus(w.id)}
-                        className={`relative p-4 rounded-xl border-2 transition-all text-left ${
-                          status ? STATUS_STYLES[status] : 'border-dashed border-slate-200 hover:border-slate-300 bg-slate-50'
+                        className={`relative rounded-xl border-2 transition-all overflow-hidden ${
+                          status
+                            ? STATUS_STYLES[status]
+                            : 'border-dashed border-slate-200 hover:border-slate-300 bg-slate-50'
                         } ${hasPending ? 'ring-2 ring-offset-2 ring-indigo-400' : ''}`}
                       >
-                        <p className={`font-semibold ${status ? '' : 'text-slate-700'}`}>{w.name}</p>
-                        <p className={`text-xs mt-1 ${status ? 'text-white/80' : 'text-slate-500'}`}>
-                          {status ? ATTENDANCE_LABELS[status] : '点击打卡'}
-                        </p>
-                        {hasPending && (
-                          <span className="absolute -top-1 -right-1 w-3 h-3 bg-indigo-500 rounded-full border-2 border-white" />
-                        )}
-                      </button>
+                        <div className="flex items-center justify-between px-3 pt-2">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCalendarWorker(w);
+                              setCalendarYm(selectedDate.slice(0, 7));
+                            }}
+                            className={`p-1 rounded-lg transition-colors ${
+                              status
+                                ? 'text-white/80 hover:text-white hover:bg-white/20'
+                                : 'text-slate-400 hover:text-indigo-600 hover:bg-indigo-50'
+                            }`}
+                            title="查看月度考勤日历"
+                          >
+                            <CalendarDays className="w-3.5 h-3.5" />
+                          </button>
+                          {hasPending && (
+                            <span className="w-2.5 h-2.5 bg-indigo-500 rounded-full border border-white" />
+                          )}
+                        </div>
+                        <button
+                          onClick={() => cycleStatus(w.id)}
+                          className={`w-full text-left px-4 pb-4 pt-1 ${status ? '' : ''}`}
+                        >
+                          <p
+                            className={`font-semibold ${status ? '' : 'text-slate-700'}`}
+                          >
+                            {w.name}
+                          </p>
+                          <p
+                            className={`text-xs mt-1 ${
+                              status ? 'text-white/80' : 'text-slate-500'
+                            }`}
+                          >
+                            {status ? ATTENDANCE_LABELS[status] : '点击打卡'}
+                          </p>
+                        </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -205,6 +271,16 @@ export default function Attendance() {
             );
           })}
         </div>
+      )}
+
+      {calendarWorker && (
+        <AttendanceCalendar
+          worker={calendarWorker}
+          yearMonth={calendarYm}
+          attendances={workerMonthAttendances}
+          onClose={() => setCalendarWorker(null)}
+          onChangeMonth={(ym) => setCalendarYm(ym)}
+        />
       )}
     </div>
   );

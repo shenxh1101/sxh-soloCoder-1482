@@ -1,16 +1,11 @@
 import { Link } from 'react-router-dom';
 import { Users, CalendarCheck, Wallet, HandCoins, Plus, ArrowRight, Clock, PersonStanding } from 'lucide-react';
 import { useStore } from '@/store/useStore';
-import { useEffect } from 'react';
 import { todayStr, getCurrentYearMonth } from '@/utils/date';
 import { TRADE_LABELS, Trade } from '@/types';
 
 export default function Dashboard() {
-  const { workers, attendances, advances, calculateAllSalaries, loadFromStorage } = useStore();
-
-  useEffect(() => {
-    loadFromStorage();
-  }, [loadFromStorage]);
+  const { workers, attendances, advances, calculateAllSalaries } = useStore();
 
   const today = todayStr();
   const yearMonth = getCurrentYearMonth();

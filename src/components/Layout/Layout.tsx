@@ -1,6 +1,7 @@
 import { NavLink, Outlet } from 'react-router-dom';
 import { LayoutDashboard, Users, CalendarCheck, Wallet, HandCoins, Building2 } from 'lucide-react';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import { useStore } from '@/store/useStore';
 
 const navItems = [
   { to: '/', label: '仪表盘', icon: LayoutDashboard },
@@ -12,6 +13,11 @@ const navItems = [
 
 export default function Layout() {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const initialize = useStore((s) => s.initialize);
+
+  useEffect(() => {
+    initialize();
+  }, [initialize]);
 
   return (
     <div className="min-h-screen bg-slate-50 flex">
