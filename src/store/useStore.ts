@@ -1,0 +1,230 @@
+import { create } from 'zustand';
+import { Worker, Attendance, Advance, ProjectWork, AttendanceStatus, Trade, SalaryDetail } from '@/types';
+import { generateId, getCurrentYearMonth, todayStr } from '@/utils/date';
+import { calculateAllSalaries } from '@/utils/salary';
+
+interface AppState {
+  workers: Worker[];
+  attendances: Attendance[];
+  advances: Advance[];
+  projectWorks: ProjectWork[];
+
+  addWorker: (data: Omit<Worker, 'id' | 'createdAt'>) => void;
+  updateWorker: (id: string, data: Partial<Worker>) => void;
+  deleteWorker: (id: string) => void;
+
+  markAttendance: (workerId: string, date: string, status: AttendanceStatus) => void;
+  batchMarkAttendance: (records: { workerId: string; date: string; status: AttendanceStatus }[]) => void;
+  getAttendanceByDate: (date: string) => Attendance[];
+  clearAttendanceByDate: (date: string) => void;
+
+  addAdvance: (data: Omit<Advance, 'id' | 'createdAt'>) => void;
+  deleteAdvance: (id: string) => void;
+
+  addProjectWork: (data: Omit<ProjectWork, 'id' | 'createdAt'>) => void;
+  deleteProjectWork: (id: string) => void;
+
+  calculateAllSalaries: (yearMonth: string) => SalaryDetail[];
+
+  loadFromStorage: () => void;
+  saveToStorage: () => void;
+}
+
+const STORAGE_KEY = 'construction_site_payroll_v1';
+
+function getMockData(): {
+  workers: Worker[];
+  attendances: Attendance[];
+  advances: Advance[];
+  projectWorks: ProjectWork[];
+} {
+  const now = new Date();
+  const thisYear = now.getFullYear();
+  const thisMonth = now.getMonth();
+
+  const workers: Worker[] = [
+    { id: generateId(), name: '张建国', trade: 'carpenter', dailyRate: 350, unitPrice: 80, joinDate: '2025-03-15', phone: '13800138001', remark: '带班师傅', createdAt: todayStr() },
+    { id: generateId(), name: '李明华', trade: 'carpenter', dailyRate: 320, unitPrice: 75, joinDate: '2025-04-01', phone: '13800138002', createdAt: todayStr() },
+    { id: generateId(), name: '王志强', trade: 'carpenter', dailyRate: 300, unitPrice: 70, joinDate: '2025-05-10', phone: '13800138003', createdAt: todayStr() },
+    { id: generateId(), name: '赵德福', trade: 'mason', dailyRate: 380, unitPrice: 60, joinDate: '2025-02-20', phone: '13800138004', remark: '瓦工组长', createdAt: todayStr() },
+    { id: generateId(), name: '孙满堂', trade: 'mason', dailyRate: 350, unitPrice: 55, joinDate: '2025-03-01', phone: '13800138005', createdAt: todayStr() },
+    { id: generateId(), name: '周立春', trade: 'mason', dailyRate: 330, unitPrice: 50, joinDate: '2025-04-15', phone: '13800138006', createdAt: todayStr() },
+    { id: generateId(), name: '吴水电', trade: 'plumber_electrician', dailyRate: 400, unitPrice: 45, joinDate: '2025-01-10', phone: '13800138007', remark: '水电大工', createdAt: todayStr() },
+    { id: generateId(), name: '郑光明', trade: 'plumber_electrician', dailyRate: 360, unitPrice: 40, joinDate: '2025-03-20', phone: '13800138008', createdAt: todayStr() },
+    { id: generateId(), name: '刘漆匠', trade: 'painter', dailyRate: 320, unitPrice: 25, joinDate: '2025-04-01', phone: '13800138009', createdAt: todayStr() },
+    { id: generateId(), name: '陈彩虹', trade: 'painter', dailyRate: 300, unitPrice: 22, joinDate: '2025-05-01', phone: '13800138010', createdAt: todayStr() },
+  ];
+
+  const attendances: Attendance[] = [];
+  const daysInMonth = new Date(thisYear, thisMonth + 1, 0).getDate();
+  const today = now.getDate();
+
+  workers.forEach((worker) => {
+    for (let day = 1; day <= Math.min(today, daysInMonth); day++) {
+      const date = `${thisYear}-${String(thisMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const d = new Date(thisYear, thisMonth, day);
+      const isWeekend = d.getDay() === 0 || d.getDay() === 6;
+
+      let status: AttendanceStatus;
+      const rand = Math.random();
+      if (isWeekend && rand < 0.4) {
+        status = rand < 0.15 ? 'leave' : 'absent';
+      } else if (rand < 0.08) {
+        status = 'leave';
+      } else if (rand < 0.12) {
+        status = 'absent';
+      } else {
+        status = 'present';
+      }
+
+      attendances.push({
+        id: generateId(),
+        workerId: worker.id,
+        date,
+        status,
+        createdAt: todayStr(),
+      });
+    }
+  });
+
+  const advances: Advance[] = [
+    { id: generateId(), workerId: workers[0].id, date: `${thisYear}-${String(thisMonth + 1).padStart(2, '0')}-05`, amount: 2000, remark: '生活费', createdAt: todayStr() },
+    { id: generateId(), workerId: workers[3].id, date: `${thisYear}-${String(thisMonth + 1).padStart(2, '0')}-05`, amount: 2000, remark: '生活费', createdAt: todayStr() },
+    { id: generateId(), workerId: workers[6].id, date: `${thisYear}-${String(thisMonth + 1).padStart(2, '0')}-08`, amount: 3000, remark: '家里急用', createdAt: todayStr() },
+    { id: generateId(), workerId: workers[1].id, date: `${thisYear}-${String(thisMonth + 1).padStart(2, '0')}-10`, amount: 1500, remark: '', createdAt: todayStr() },
+    { id: generateId(), workerId: workers[0].id, date: `${thisYear}-${String(thisMonth + 1).padStart(2, '0')}-15`, amount: 1000, remark: '', createdAt: todayStr() },
+  ];
+
+  const projectWorks: ProjectWork[] = [
+    { id: generateId(), workerId: workers[0].id, date: `${thisYear}-${String(thisMonth + 1).padStart(2, '0')}-03`, area: 25, remark: '3层吊顶', createdAt: todayStr() },
+    { id: generateId(), workerId: workers[0].id, date: `${thisYear}-${String(thisMonth + 1).padStart(2, '0')}-10`, area: 30, remark: '4层隔墙', createdAt: todayStr() },
+    { id: generateId(), workerId: workers[3].id, date: `${thisYear}-${String(thisMonth + 1).padStart(2, '0')}-05`, area: 80, remark: '2层地砖', createdAt: todayStr() },
+    { id: generateId(), workerId: workers[3].id, date: `${thisYear}-${String(thisMonth + 1).padStart(2, '0')}-12`, area: 65, remark: '3层墙砖', createdAt: todayStr() },
+    { id: generateId(), workerId: workers[8].id, date: `${thisYear}-${String(thisMonth + 1).padStart(2, '0')}-08`, area: 120, remark: '1层内墙腻子', createdAt: todayStr() },
+  ];
+
+  return { workers, attendances, advances, projectWorks };
+}
+
+export const useStore = create<AppState>((set, get) => ({
+  workers: [],
+  attendances: [],
+  advances: [],
+  projectWorks: [],
+
+  addWorker: (data) => {
+    set((s) => ({ workers: [...s.workers, { ...data, id: generateId(), createdAt: todayStr() }] }));
+    get().saveToStorage();
+  },
+
+  updateWorker: (id, data) => {
+    set((s) => ({ workers: s.workers.map((w) => (w.id === id ? { ...w, ...data } : w)) }));
+    get().saveToStorage();
+  },
+
+  deleteWorker: (id) => {
+    set((s) => ({
+      workers: s.workers.filter((w) => w.id !== id),
+      attendances: s.attendances.filter((a) => a.workerId !== id),
+      advances: s.advances.filter((a) => a.workerId !== id),
+      projectWorks: s.projectWorks.filter((p) => p.workerId !== id),
+    }));
+    get().saveToStorage();
+  },
+
+  markAttendance: (workerId, date, status) => {
+    set((s) => {
+      const existing = s.attendances.find((a) => a.workerId === workerId && a.date === date);
+      if (existing) {
+        return {
+          attendances: s.attendances.map((a) =>
+            a.id === existing.id ? { ...a, status } : a
+          ),
+        };
+      }
+      return {
+        attendances: [
+          ...s.attendances,
+          { id: generateId(), workerId, date, status, createdAt: todayStr() },
+        ],
+      };
+    });
+    get().saveToStorage();
+  },
+
+  batchMarkAttendance: (records) => {
+    set((s) => {
+      const newAttendances = [...s.attendances];
+      records.forEach(({ workerId, date, status }) => {
+        const idx = newAttendances.findIndex((a) => a.workerId === workerId && a.date === date);
+        if (idx >= 0) {
+          newAttendances[idx] = { ...newAttendances[idx], status };
+        } else {
+          newAttendances.push({ id: generateId(), workerId, date, status, createdAt: todayStr() });
+        }
+      });
+      return { attendances: newAttendances };
+    });
+    get().saveToStorage();
+  },
+
+  getAttendanceByDate: (date) => {
+    return get().attendances.filter((a) => a.date === date);
+  },
+
+  clearAttendanceByDate: (date) => {
+    set((s) => ({ attendances: s.attendances.filter((a) => a.date !== date) }));
+    get().saveToStorage();
+  },
+
+  addAdvance: (data) => {
+    set((s) => ({ advances: [...s.advances, { ...data, id: generateId(), createdAt: todayStr() }] }));
+    get().saveToStorage();
+  },
+
+  deleteAdvance: (id) => {
+    set((s) => ({ advances: s.advances.filter((a) => a.id !== id) }));
+    get().saveToStorage();
+  },
+
+  addProjectWork: (data) => {
+    set((s) => ({ projectWorks: [...s.projectWorks, { ...data, id: generateId(), createdAt: todayStr() }] }));
+    get().saveToStorage();
+  },
+
+  deleteProjectWork: (id) => {
+    set((s) => ({ projectWorks: s.projectWorks.filter((p) => p.id !== id) }));
+    get().saveToStorage();
+  },
+
+  calculateAllSalaries: (yearMonth) => {
+    const { workers, attendances, advances, projectWorks } = get();
+    return calculateAllSalaries(workers, attendances, advances, projectWorks, yearMonth);
+  },
+
+  loadFromStorage: () => {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        set(parsed);
+      } else {
+        const mock = getMockData();
+        set(mock);
+        get().saveToStorage();
+      }
+    } catch {
+      const mock = getMockData();
+      set(mock);
+    }
+  },
+
+  saveToStorage: () => {
+    try {
+      const { workers, attendances, advances, projectWorks } = get();
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ workers, attendances, advances, projectWorks }));
+    } catch {
+      // ignore
+    }
+  },
+}));
